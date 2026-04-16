@@ -9,7 +9,7 @@ from rdkit import Chem
 from torch_scatter import scatter_mean
 from openbabel import openbabel
 openbabel.obErrorLog.StopLogging()  # suppress OpenBabel messages
-
+torch.serialization.add_safe_globals([argparse.Namespace])
 import utils
 from lightning_modules import LigandPocketDDPM
 from constants import FLOAT_TYPE, INT_TYPE
@@ -60,7 +60,7 @@ def prepare_substructure(ref_ligand, fix_atoms, pdb_model):
     return coord, one_hot
 
 
-def inpaint_ligand(model, pdb_file, n_samples, ligand, fix_atoms,
+def inpaint_ligand(model, pdb_file, n_samples, ligand, fix_atoms, fix_coords_only=None,
                    add_n_nodes=None, center='ligand', sanitize=False,
                    largest_frag=False, relax_iter=0, timesteps=None,
                    resamplings=1, save_traj=False):
@@ -123,8 +123,10 @@ def inpaint_ligand(model, pdb_file, n_samples, ligand, fix_atoms,
         'mask': ligand_mask
     }
 
-    # fill in fixed atoms
-    lig_fixed = torch.zeros_like(ligand_mask)
+    # 拆分坐标掩码与类型掩码
+    lig_fixed_x = torch.zeros_like(ligand_mask)
+    lig_fixed_h = torch.zeros_like(ligand_mask)
+    
     for i in range(n_samples):
         sele = (ligand_mask == i)
 
@@ -136,16 +138,26 @@ def inpaint_ligand(model, pdb_file, n_samples, ligand, fix_atoms,
         h_new[:n_fixed] = one_hot_fixed
         ligand['one_hot'][sele] = h_new
 
-        fixed_new = lig_fixed[sele]
-        fixed_new[:n_fixed] = 1
-        lig_fixed[sele] = fixed_new
+        # 写入坐标掩码 (全部锚点固定空间位置)
+        fixed_x_new = lig_fixed_x[sele]
+        fixed_x_new[:n_fixed] = 1
+        lig_fixed_x[sele] = fixed_x_new
+        
+        # 写入类型掩码 (按需释放冲突位置)
+        fixed_h_new = lig_fixed_h[sele]
+        fixed_h_new[:n_fixed] = 1
+        if fix_coords_only is not None:
+            for idx in fix_coords_only:
+                if idx < n_fixed:
+                    fixed_h_new[idx] = 0  # 释放指定原子的化学身份
+        lig_fixed_h[sele] = fixed_h_new
 
     # Pocket's center of mass
     pocket_com_before = scatter_mean(pocket['x'], pocket['mask'], dim=0)
 
     # Run sampling
     xh_lig, xh_pocket, lig_mask, pocket_mask = model.ddpm.inpaint(
-        ligand, pocket, lig_fixed, center=center,
+        ligand, pocket, lig_fixed_x=lig_fixed_x, lig_fixed_h=lig_fixed_h, center=center,
         resamplings=resamplings, timesteps=timesteps, return_frames=frames)
 
     # Treat intermediate states as molecules for downstream processing
@@ -172,6 +184,7 @@ def inpaint_ligand(model, pdb_file, n_samples, ligand, fix_atoms,
     # Build mol objects
     x = xh_lig[:, :model.x_dims].detach().cpu()
     atom_type = xh_lig[:, model.x_dims:].argmax(1).detach().cpu()
+    lig_mask = lig_mask.cpu()
 
     molecules = []
     for mol_pc in zip(utils.batch_to_list(x, lig_mask),
@@ -196,6 +209,8 @@ if __name__ == "__main__":
     parser.add_argument('--pdbfile', type=str)
     parser.add_argument('--ref_ligand', type=str, default=None)
     parser.add_argument('--fix_atoms', type=str, nargs='+', default=None)
+    parser.add_argument('--fix_coords_only', type=int, nargs='+', default=None, 
+                        help='当传入SDF时，指定仅固定坐标、不固定类型的原子索引(0-based)')
     parser.add_argument('--center', type=str, default='ligand', choices={'ligand', 'pocket'})
     parser.add_argument('--outfile', type=Path)
     parser.add_argument('--n_samples', type=int, default=20)
@@ -217,7 +232,7 @@ if __name__ == "__main__":
     model = model.to(device)
 
     molecules = inpaint_ligand(model, args.pdbfile, args.n_samples,
-                               args.ref_ligand, args.fix_atoms,
+                               args.ref_ligand, args.fix_atoms, args.fix_coords_only,
                                args.add_n_nodes, center=args.center,
                                sanitize=args.sanitize,
                                largest_frag=False,

@@ -674,7 +674,7 @@ class EnVariationalDiffusion(nn.Module):
         return list(reversed(repaint_schedule))
 
     @torch.no_grad()
-    def inpaint(self, ligand, pocket, lig_fixed, pocket_fixed, resamplings=1,
+    def inpaint(self, ligand, pocket, lig_fixed_x, pocket_fixed, lig_fixed_h=None, resamplings=1,
                 jump_length=1, return_frames=1, timesteps=None):
         """
         Draw samples from the generative model while fixing parts of the input.
@@ -691,8 +691,13 @@ class EnVariationalDiffusion(nn.Module):
         assert jump_length == 1 or return_frames == 1, \
             "Chain visualization is only implemented for jump_length=1"
 
-        if len(lig_fixed.size()) == 1:
-            lig_fixed = lig_fixed.unsqueeze(1)
+        if lig_fixed_h is None:
+            lig_fixed_h = lig_fixed_x  # 默认行为：类型约束与坐标约束一致
+
+        if len(lig_fixed_x.size()) == 1:
+            lig_fixed_x = lig_fixed_x.unsqueeze(1)
+        if len(lig_fixed_h.size()) == 1:
+            lig_fixed_h = lig_fixed_h.unsqueeze(1)
         if len(pocket_fixed.size()) == 1:
             pocket_fixed = pocket_fixed.unsqueeze(1)
 
@@ -705,9 +710,9 @@ class EnVariationalDiffusion(nn.Module):
 
         # Center initial system, subtract COM of known parts
         mean_known = scatter_mean(
-            torch.cat((ligand['x'][lig_fixed.bool().view(-1)],
+            torch.cat((ligand['x'][lig_fixed_x.bool().view(-1)],
                        pocket['x'][pocket_fixed.bool().view(-1)])),
-            torch.cat((ligand['mask'][lig_fixed.bool().view(-1)],
+            torch.cat((ligand['mask'][lig_fixed_x.bool().view(-1)],
                        pocket['mask'][pocket_fixed.bool().view(-1)])),
             dim=0
         )
@@ -753,16 +758,16 @@ class EnVariationalDiffusion(nn.Module):
                 # of the corresponding denoised part before combining them
                 # -> the resulting system should be COM-free
                 com_noised = scatter_mean(
-                    torch.cat((z_lig_known[:, :self.n_dims][lig_fixed.bool().view(-1)],
+                    torch.cat((z_lig_known[:, :self.n_dims][lig_fixed_x.bool().view(-1)],
                                z_pocket_known[:, :self.n_dims][pocket_fixed.bool().view(-1)])),
-                    torch.cat((ligand['mask'][lig_fixed.bool().view(-1)],
+                    torch.cat((ligand['mask'][lig_fixed_x.bool().view(-1)],
                                pocket['mask'][pocket_fixed.bool().view(-1)])),
                     dim=0
                 )
                 com_denoised = scatter_mean(
-                    torch.cat((z_lig_unknown[:, :self.n_dims][lig_fixed.bool().view(-1)],
+                    torch.cat((z_lig_unknown[:, :self.n_dims][lig_fixed_x.bool().view(-1)],
                                z_pocket_unknown[:, :self.n_dims][pocket_fixed.bool().view(-1)])),
-                    torch.cat((ligand['mask'][lig_fixed.bool().view(-1)],
+                    torch.cat((ligand['mask'][lig_fixed_x.bool().view(-1)],
                                pocket['mask'][pocket_fixed.bool().view(-1)])),
                     dim=0
                 )
@@ -772,8 +777,14 @@ class EnVariationalDiffusion(nn.Module):
                     z_pocket_known[:, :self.n_dims] + (com_denoised - com_noised)[pocket['mask']]
 
                 # combine
-                z_lig = z_lig_known * lig_fixed + \
-                        z_lig_unknown * (1 - lig_fixed)
+                z_lig_x = z_lig_known[:, :self.n_dims] * lig_fixed_x + \
+                          z_lig_unknown[:, :self.n_dims] * (1 - lig_fixed_x)
+                
+                z_lig_h = z_lig_known[:, self.n_dims:] * lig_fixed_h + \
+                          z_lig_unknown[:, self.n_dims:] * (1 - lig_fixed_h)
+                          
+                z_lig = torch.cat([z_lig_x, z_lig_h], dim=1)
+
                 z_pocket = z_pocket_known * pocket_fixed + \
                            z_pocket_unknown * (1 - pocket_fixed)
 

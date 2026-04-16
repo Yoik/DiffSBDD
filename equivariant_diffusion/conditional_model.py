@@ -555,8 +555,8 @@ class ConditionalDDPM(EnVariationalDiffusion):
                pocket['mask']
 
     @torch.no_grad()
-    def inpaint(self, ligand, pocket, lig_fixed, resamplings=1, return_frames=1,
-                timesteps=None, center='ligand'):
+    def inpaint(self, ligand, pocket, lig_fixed_x, lig_fixed_h=None, center='ligand',
+                resamplings=1, jump_length=1, return_frames=1, timesteps=None):
         """
         Draw samples from the generative model while fixing parts of the input.
         Optionally, return intermediate states for visualization purposes.
@@ -570,8 +570,13 @@ class ConditionalDDPM(EnVariationalDiffusion):
         assert 0 < return_frames <= timesteps
         assert timesteps % return_frames == 0
 
-        if len(lig_fixed.size()) == 1:
-            lig_fixed = lig_fixed.unsqueeze(1)
+        if lig_fixed_h is None:
+            lig_fixed_h = lig_fixed_x
+
+        if len(lig_fixed_x.size()) == 1:
+            lig_fixed_x = lig_fixed_x.unsqueeze(1)
+        if len(lig_fixed_h.size()) == 1:
+            lig_fixed_h = lig_fixed_h.unsqueeze(1)
 
         n_samples = len(ligand['size'])
         device = pocket['x'].device
@@ -588,8 +593,8 @@ class ConditionalDDPM(EnVariationalDiffusion):
 
         # Center initial system, subtract COM of known parts
         if center == 'ligand':
-            mean_known = scatter_mean(ligand['x'][lig_fixed.bool().view(-1)],
-                                      ligand['mask'][lig_fixed.bool().view(-1)],
+            mean_known = scatter_mean(ligand['x'][lig_fixed_x.bool().view(-1)],
+                                      ligand['mask'][lig_fixed_x.bool().view(-1)],
                                       dim=0)
         elif center == 'pocket':
             mean_known = scatter_mean(pocket['x'], pocket['mask'], dim=0)
@@ -646,18 +651,23 @@ class ConditionalDDPM(EnVariationalDiffusion):
                 # of the corresponding denoised part before combining them
                 # -> the resulting system should be COM-free
                 com_noised = scatter_mean(
-                    z_lig_known[lig_fixed.bool().view(-1)][:, :self.n_dims],
-                    ligand['mask'][lig_fixed.bool().view(-1)], dim=0)
+                    z_lig_known[lig_fixed_x.bool().view(-1)][:, :self.n_dims],
+                    ligand['mask'][lig_fixed_x.bool().view(-1)], dim=0)
                 com_denoised = scatter_mean(
-                    z_lig_unknown[lig_fixed.bool().view(-1)][:, :self.n_dims],
-                    ligand['mask'][lig_fixed.bool().view(-1)], dim=0)
+                    z_lig_unknown[lig_fixed_x.bool().view(-1)][:, :self.n_dims],
+                    ligand['mask'][lig_fixed_x.bool().view(-1)], dim=0)
                 dx = com_denoised - com_noised
                 z_lig_known[:, :self.n_dims] = z_lig_known[:, :self.n_dims] + dx[ligand['mask']]
                 xh_pocket[:, :self.n_dims] = xh_pocket[:, :self.n_dims] + dx[pocket['mask']]
 
                 # combine
-                z_lig = z_lig_known * lig_fixed + z_lig_unknown * (
-                            1 - lig_fixed)
+                z_lig_x = z_lig_known[:, :self.n_dims] * lig_fixed_x + \
+                          z_lig_unknown[:, :self.n_dims] * (1 - lig_fixed_x)
+                
+                z_lig_h = z_lig_known[:, self.n_dims:] * lig_fixed_h + \
+                          z_lig_unknown[:, self.n_dims:] * (1 - lig_fixed_h)
+                          
+                z_lig = torch.cat([z_lig_x, z_lig_h], dim=1)
 
                 if u < resamplings - 1:
                     # Noise the sample

@@ -7,7 +7,7 @@ openbabel.obErrorLog.StopLogging()  # suppress OpenBabel messages
 
 import utils
 from lightning_modules import LigandPocketDDPM
-
+torch.serialization.add_safe_globals([argparse.Namespace])
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

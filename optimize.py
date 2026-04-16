@@ -11,6 +11,7 @@ import random
 from torch_scatter import scatter_mean
 from openbabel import openbabel
 openbabel.obErrorLog.StopLogging()  # suppress OpenBabel messages
+torch.serialization.add_safe_globals([argparse.Namespace])
 
 import utils
 from lightning_modules import LigandPocketDDPM
@@ -196,13 +197,17 @@ if __name__ == "__main__":
     ref_mol = Chem.SDMolSupplier(args.ref_ligand)[0]
 
     # Store molecules in history dataframe 
-    buffer = pd.DataFrame(columns=['generation', 'score', 'fate' 'mol', 'smiles'])
+    buffer = pd.DataFrame(columns=['generation', 'score', 'fate', 'mol', 'smiles'])
 
     # Population initialization
-    buffer = buffer.append({'generation': 0,
-                            'score': objective_function(ref_mol),
-                            'fate': 'initial', 'mol': ref_mol,
-                            'smiles': Chem.MolToSmiles(ref_mol)}, ignore_index=True)
+    new_row = pd.DataFrame({
+        'generation': [0],
+        'score': [objective_function(ref_mol)],
+        'fate': ['initial'],
+        'mol': [ref_mol],
+        'smiles': [Chem.MolToSmiles(ref_mol)]
+    })
+    buffer = pd.concat([buffer, new_row], ignore_index=True)
 
     for generation_idx in range(evolution_steps):
 
@@ -232,15 +237,19 @@ if __name__ == "__main__":
                                 sanitize=True,
                                 relax_iter=(200 if args.relax else 0))
         
-        
+        new_rows = []
         # Evaluate and save molecules
         for mol in molecules:
-            buffer = buffer.append({'generation': generation_idx + 1,
-            'score': objective_function(mol),
-            'fate': 'purged',
-            'mol': mol,
-            'smiles': Chem.MolToSmiles(mol)}, ignore_index=True)
-
+            new_rows.append({
+                'generation': generation_idx + 1,
+                'score': objective_function(mol),
+                'fate': 'purged',
+                'mol': mol,
+                'smiles': Chem.MolToSmiles(mol)
+            })
+        if new_rows:
+            new_df = pd.DataFrame(new_rows)
+            buffer = pd.concat([buffer, new_df], ignore_index=True)
 
     # Make SDF files
     utils.write_sdf_file(args.outfile, molecules)

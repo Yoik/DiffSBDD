@@ -1,0 +1,41 @@
+# =================================
+# 1. Ignore everything by default
+# =================================
+*
+
+# =================================
+# 2. Allow directory traversal
+# =================================
+!*/
+
+# =================================
+# 3. Whitelist
+# =================================
+# Code and scripts
+*.sh
+
+# Configs
+!*.yml
+environment.yml
+!.gitignore
+
+# Docs
+!*.md
+README
+CLAUDE.md
+
+# =================================
+# 4. Blacklist
+# =================================
+# Python cache and env
+__pycache__/
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# IDE and OS files
+.vscode/
+.idea/
+.DS_Store
